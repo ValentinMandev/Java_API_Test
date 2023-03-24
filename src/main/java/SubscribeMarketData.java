@@ -3,31 +3,23 @@ import com.fxcm.external.api.transport.GatewayFactory;
 import com.fxcm.external.api.transport.IGateway;
 import com.fxcm.external.api.transport.listeners.IGenericMessageListener;
 import com.fxcm.external.api.transport.listeners.IStatusMessageListener;
-import com.fxcm.external.api.util.MessageGenerator;
+import com.fxcm.fix.IFixDefs;
 import com.fxcm.fix.NotDefinedException;
-import com.fxcm.fix.OrdTypeFactory;
 import com.fxcm.fix.SubscriptionRequestTypeFactory;
 import com.fxcm.fix.TradingSecurity;
-import com.fxcm.fix.posttrade.CollateralReport;
 import com.fxcm.fix.pretrade.MarketDataRequest;
+import com.fxcm.fix.pretrade.MarketDataRequestReject;
 import com.fxcm.fix.pretrade.MarketDataSnapshot;
 import com.fxcm.fix.pretrade.TradingSessionStatus;
-import com.fxcm.fix.trade.ExecutionReport;
-import com.fxcm.fix.trade.OrderSingle;
 import com.fxcm.messaging.ISessionStatus;
 import com.fxcm.messaging.ITransportable;
 import com.fxcm.util.Util;
-import common.Order;
-import enums.Sides;
-import enums.TIFs;
 
-import java.math.BigDecimal;
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Enumeration;
 import java.util.List;
 
-public class CreateLimitEntryOrder {
+
+public class SubscribeMarketData {
     private String mAccountMassID;
     private IGateway mFxcmGateway;
     private final String mPassword;
@@ -35,15 +27,14 @@ public class CreateLimitEntryOrder {
     private final String mStation;
     private IStatusMessageListener mStatusListener;
     private final String mUsername;
-    private final Order order;
+    private final String mSymbol;
 
-
-    public CreateLimitEntryOrder(String[] aArgs) {
-        mUsername = aArgs[0];
-        mPassword = aArgs[1];
-        mStation = aArgs[2];
-        mServer = aArgs[3];
-        order = getOrder(Arrays.stream(aArgs).skip(4).toArray(String[]::new));
+    public SubscribeMarketData(String aUsername, String aPassword, String aStation, String aServer, String aSymbol) {
+        mServer = aServer;
+        mUsername = aUsername;
+        mPassword = aPassword;
+        mStation = aStation;
+        mSymbol = aSymbol;
     }
 
     private boolean doResult(final MessageTestHandler aMessageTestHandler) {
@@ -68,29 +59,21 @@ public class CreateLimitEntryOrder {
         return aMessageTestHandler.isSuccess();
     }
 
-    private void handleMessage(ITransportable aMessage, List aAccounts, MessageTestHandler aMessageTestHandler) {
-        if (aMessage instanceof CollateralReport) {
-            CollateralReport cr = (CollateralReport) aMessage;
-            if (safeEquals(mAccountMassID, cr.getRequestID()) && aAccounts != null) {
-                aAccounts.add(cr);
-            }
-            aMessageTestHandler.process(cr);
+    private void handleMessage(ITransportable aMessage, List aAccounts, MessageTestHandler aMessageTestHandler) throws NotDefinedException {
+        if (aMessage instanceof MarketDataSnapshot) {
+            aMessageTestHandler.process((MarketDataSnapshot) aMessage);
+        } else if (aMessage instanceof MarketDataRequestReject) {
+            aMessageTestHandler.process((MarketDataRequestReject) aMessage);
         } else if (aMessage instanceof TradingSessionStatus) {
             aMessageTestHandler.process((TradingSessionStatus) aMessage);
-        } else if (aMessage instanceof MarketDataSnapshot) {
-            aMessageTestHandler.process((MarketDataSnapshot) aMessage);
-        } else if (aMessage instanceof ExecutionReport) {
-            aMessageTestHandler.process((ExecutionReport) aMessage);
         }
     }
 
-    private static Order getOrder(String[] aArgs) {
-        return new Order(aArgs[0], Integer.parseInt(aArgs[1]), aArgs[2], aArgs[3]);
-    }
-
     private static void runTest(String[] aArgs) {
-        CreateLimitEntryOrder createEntryOrder = new CreateLimitEntryOrder(aArgs);
-        createEntryOrder.testCreateEntryOrder(false);
+
+        SubscribeMarketData subscribeMarketData = new SubscribeMarketData(aArgs[0], aArgs[1], aArgs[2], aArgs[3], aArgs[4]);
+        subscribeMarketData.testMarketDataRequest();
+
     }
 
     public static boolean safeEquals(String aString1, String aString2) {
@@ -131,43 +114,47 @@ public class CreateLimitEntryOrder {
         }
     }
 
-    public boolean testCreateEntryOrder(final boolean aIsDay) {
-        final String cem = Util.getCurrentlyExecutingMethod();
+    public boolean testMarketDataRequest() {
+        String cem = Util.getCurrentlyExecutingMethod();
         System.out.println(cem);
         class GenericListener extends MessageTestHandler {
-            private final List mAccounts = new ArrayList();
-            private boolean mOrder = true;
-            private String mRequestId;
-            private final boolean mIsDay = aIsDay;
+            private String mMarketDataRequestID;
 
-            public void process(MarketDataSnapshot aMarketDataSnapshot) {
+            public void process(TradingSessionStatus aTradingSessionStatus) {
                 try {
-                    if (mOrder && !mAccounts.isEmpty()) {
-                        CollateralReport acct = (CollateralReport) mAccounts.get(0);
-                        mOrder = false;
-                        OrderSingle os2 = MessageGenerator.generateStopLimitEntry(
-                                add(aMarketDataSnapshot.getBidClose(), .003, aMarketDataSnapshot.getInstrument().getSymbol()),
-                                OrdTypeFactory.LIMIT,
-                                acct.getAccount(),
-                                order.getAmount(),
-                                Sides.valueOf(order.getSide().toUpperCase()).getSide(),
-                                order.getSymbol(),
-                                cem);
-                        if (mIsDay) {
-                            os2.setTimeInForce(TIFs.valueOf("DAY").getTIF());
+                    MarketDataRequest mdr = new MarketDataRequest();
+                    Enumeration securities = aTradingSessionStatus.getSecurities();
+                    while (securities.hasMoreElements()) {
+                        TradingSecurity o = (TradingSecurity) securities.nextElement();
+                        if (mSymbol.equals(o.getSymbol().toUpperCase())) {
+                            mdr.addRelatedSymbol(o);
                         }
-                        mRequestId = mFxcmGateway.sendMessage(os2);
-                        System.out.println("client: entry order requestId = " + mRequestId);
-                    }
 
+                    }
+                    mdr.setSubscriptionRequestType(SubscriptionRequestTypeFactory.SUBSCRIBE);
+                    mdr.setMDEntryTypeSet(MarketDataRequest.MDENTRYTYPESET_ALL);
+                    mMarketDataRequestID = mFxcmGateway.sendMessage(mdr);
                 } catch (Exception e) {
                     e.printStackTrace();
                 }
-
+            }
+            public void process(MarketDataSnapshot aMarketDataSnapshot) throws NotDefinedException {
+                super.process(aMarketDataSnapshot);
+                if (safeEquals(aMarketDataSnapshot.getRequestID(), mMarketDataRequestID) &&
+                        safeEquals(aMarketDataSnapshot.getInstrument().getSymbol(), mSymbol)) {
+                    System.out.println("client inc: aMarketDataSnapshot = " + aMarketDataSnapshot);
+                    if (aMarketDataSnapshot.getFXCMContinuousFlag() == IFixDefs.FXCMCONTINUOUS_END) {
+                        setSuccess(true);
+                    }
+                }
             }
 
             public void messageArrived(ITransportable aMessage) {
-                handleMessage(aMessage, mAccounts, this);
+                try {
+                    handleMessage(aMessage, null, this);
+                } catch (NotDefinedException e) {
+                    throw new RuntimeException(e);
+                }
             }
         }
 
@@ -201,55 +188,36 @@ public class CreateLimitEntryOrder {
             return mSuccess;
         }
 
-        public void process(CollateralReport aCollateralReport) {
-//            System.out.println("client inc: aCollateralReport = " + aCollateralReport);
-            if (mAccountMassID.equals(aCollateralReport.getRequestID()) && aCollateralReport.isLastRptRequested()) {
-                try {
-//                    System.out.println("client out: do marketdatarequest for testing to get fast mds");
-                    MarketDataRequest mdr = new MarketDataRequest();
-                    Enumeration securities = mTradingSessionStatus.getSecurities();
-                    while (securities.hasMoreElements()) {
-                        TradingSecurity o = (TradingSecurity) securities.nextElement();
-                        if (order.getSymbol().equals(o.getSymbol())) {
-                            mdr.addRelatedSymbol(o);
-                        }
-                    }
-                    mdr.setSubscriptionRequestType(SubscriptionRequestTypeFactory.SUBSCRIBE);
-                    mdr.setMDEntryTypeSet(MarketDataRequest.MDENTRYTYPESET_ALL);
-                    mFxcmGateway.sendMessage(mdr);
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
-            }
+        public void setSuccess(boolean aSuccess) {
+            mSuccess = aSuccess;
         }
 
-        public double add(double aValue1, double aValue2, String aSymbol) throws NotDefinedException {
-            int precision = mTradingSessionStatus.getSecurity(aSymbol).getFXCMSymPrecision();
-            return BigDecimal.valueOf(aValue1 + aValue2).setScale(precision, BigDecimal.ROUND_HALF_UP).doubleValue();
+
+        public void process(MarketDataSnapshot aMarketDataSnapshot) throws NotDefinedException {
+            if (safeEquals(aMarketDataSnapshot.getInstrument().getSymbol(), mSymbol)) {
+                System.out.println("client inc: aMarketDataSnapshot = " + aMarketDataSnapshot);
+                if (aMarketDataSnapshot.getFXCMContinuousFlag() == IFixDefs.FXCMCONTINUOUS_END) {
+                    setSuccess(true);
+                }
+            }
+
+        }
+
+        public void process(MarketDataRequestReject aMarketDataRequestReject) {
         }
 
         public void process(TradingSessionStatus aTradingSessionStatus) {
             mTradingSessionStatus = aTradingSessionStatus;
-//            System.out.println("client inc: aTradingSessionStatus = " + aTradingSessionStatus);
-        }
-
-        public void process(MarketDataSnapshot aMarketDataSnapshot) {
-            //nothing
-        }
-
-        public void process(ExecutionReport aExecutionReport) {
-            System.out.println("client inc: aExecutionReport = " + aExecutionReport);
+            System.out.println("client inc: aTradingSessionStatus = " + aTradingSessionStatus);
         }
 
     }
 
     public static void main(String[] aArgs) {
-        if (aArgs.length < 8) {
-            System.out.println("must supply 4 arguments: username, password, station, hostname," +
-                    "symbol, amount, side, time in force");
+        if (aArgs.length < 5) {
+            System.out.println("must supply 5 arguments: username, password, station, hostname, symbol");
             return;
         }
-
         runTest(aArgs);
     }
 }

@@ -25,7 +25,7 @@ public class HistData
     private static final UTCDate[][] dateRange = new UTCDate[2][1000];
     private static final UTCTimeOnly[][] timeRange = new UTCTimeOnly[2][1000];
 
-    private static class Request{
+    private static class Request {
         final String username;
         final String password;
         final String terminal;
